@@ -1,0 +1,18 @@
+{
+  "name": "linkedin-jobs-scraper",
+  "version": "1.0.0",
+  "description": "A full-stack application that scrapes LinkedIn for people with specific job titles and locations, providing comprehensive profile data including contact information.",
+  "main": "test-single-profile.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "apify-client": "^2.12.6",
+    "dotenv": "^17.2.1",
+    "exceljs": "^4.4.0"
+  }
+}
