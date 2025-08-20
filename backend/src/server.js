@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const apiRoutes = require('./routes/api');
+const path = require('path');
 
 // Debug: Log the current actor configuration
 console.log('=== ACTOR CONFIGURATION ===');
@@ -17,8 +18,16 @@ const PORT = process.env.PORT || 5001;
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Increase payload size limit for data
 
+// Serve frontend
+app.use(express.static(path.join(__dirname, '..', '..', 'frontend', 'build')));
+
 // API Routes
 app.use('/api', apiRoutes);
+
+// Catch-all to serve index.html for any other request
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '..', '..', 'frontend', 'build', 'index.html'));
+});
 
 // Start Server
 app.listen(PORT, () => {
