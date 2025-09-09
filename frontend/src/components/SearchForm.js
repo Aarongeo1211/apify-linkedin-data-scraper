@@ -29,6 +29,7 @@ const SearchForm = ({ onSearch, isLoading }) => {
                 <div className="form-group">
                     <label htmlFor="maxProfiles" className="form-label">Max Profiles</label>
                     <input type="number" id="maxProfiles" value={maxProfiles} onChange={(e) => setMaxProfiles(e.target.value)} className="form-input" min="1" max="1000" />
+                    <small className="form-hint">Large datasets (&gt;50) are processed in chunks. Expect ~2-3 minutes per 50 profiles.</small>
                 </div>
                 <div className="form-group">
                     <button type="submit" disabled={isLoading} className="search-button">

@@ -70,7 +70,8 @@ const calculateTotalExperience = (experiences) => {
 };
 
 
-const searchLinkedInProfiles = async (searchCriteria) => {
+// Step 1: Search for LinkedIn profile URLs (separate function for chunked processing)
+const searchLinkedInProfileUrls = async (searchCriteria) => {
     // Use the environment variable for the search actor, with a clear default
     const searchActorId = process.env.APIFY_SEARCH_ACTOR_ID || "harvestapi/linkedin-profile-search";
     
@@ -152,63 +153,163 @@ const searchLinkedInProfiles = async (searchCriteria) => {
     return profileUrls;
 };
 
-// Step 2: Get detailed profile information for each URL
+// Helper function to transform detailed profile data
+const transformProfileData = (detailedProfiles, profileUrls) => {
+    return detailedProfiles.map((item, index) => {
+        const originalUrl = item.originalProfileUrl || profileUrls[index] || '#';
+        
+        // Access the nested basic_info structure from the detail actor
+        const basicInfo = item.basic_info || item;
+        const experiences = item.experience || [];
+        const currentPosition = experiences.length > 0 ? experiences[0] : {};
+        
+        // Extract education
+        const education = item.education || [];
+        const primaryEducation = education.length > 0 ? education[0] : {};
+        
+        // Extract skills
+        const skills = item.skills || [];
+        const skillNames = Array.isArray(skills) ? skills.slice(0, 5) : [];
+        
+        // Extract contact information - prioritize email from basic_info
+        const email = basicInfo.email || item.email || 'N/A';
+        const contactDetails = [];
+        if (email && email !== 'N/A') {
+            contactDetails.push(`Email: ${email}`);
+        }
+        
+        // Extract other contact details
+        const contactInfo = item.contact_info || item.contactInfo || {};
+        if (contactInfo.phone || item.phone) {
+            contactDetails.push(`Phone: ${contactInfo.phone || item.phone}`);
+        }
+        if (contactInfo.website || item.website) {
+            contactDetails.push(`Website: ${contactInfo.website || item.website}`);
+        }
+        
+        // Extract location information
+        const location = basicInfo.location ? 
+            (basicInfo.location.full || basicInfo.location.city || basicInfo.location.country) :
+            (item.locationName || item.location);
+        
+        const { years, totalMonths, experienceString } = calculateTotalExperience(experiences);
+
+        return {
+            fullName: safeExtractString(basicInfo.fullname || basicInfo.first_name && basicInfo.last_name ? 
+                `${basicInfo.first_name} ${basicInfo.last_name}` : 
+                basicInfo.name || item.fullName),
+            title: safeExtractString(basicInfo.headline || currentPosition.title || item.currentJobTitle),
+            company: safeExtractString(basicInfo.current_company || currentPosition.company || currentPosition.companyName),
+            location: safeExtractString(location),
+            profileUrl: originalUrl,
+            summary: safeExtractString(basicInfo.about || item.summary || item.bio, 'No summary available'),
+            experience: experienceString,
+            experienceInMonths: totalMonths,
+            contactDetails: contactDetails.length > 0 ?
+                contactDetails.join(' | ') :
+                'No contact details available',
+            email: safeExtractString(email),
+            phone: safeExtractString(contactInfo.phone || item.phone),
+            skills: skillNames.length > 0 ? skillNames.join(', ') : 'N/A',
+            education: safeExtractString(primaryEducation.school || primaryEducation.degree || 'N/A'),
+            connections: safeExtractString(basicInfo.connection_count || basicInfo.follower_count || item.connections),
+            industry: safeExtractString(item.industryName || item.industry || 'Technology'),
+            yearsOfExperience: years
+        };
+    });
+};
+// Step 2: Get detailed profile information for each URL with parallel processing
 const getDetailedProfileData = async (profileUrls) => {
     const detailActorId = process.env.APIFY_DETAIL_ACTOR_ID || "apimaestro/linkedin-profile-detail";
     const detailedProfiles = [];
     
-    console.log(`Step 2: Getting detailed data for ${profileUrls.length} profiles`);
+    console.log(`Step 2: Getting detailed data for ${profileUrls.length} profiles using parallel processing`);
     
-    // Process profiles one by one to ensure proper tracking
-    for (let i = 0; i < profileUrls.length; i++) {
-        const profileUrl = profileUrls[i];
-        console.log(`Processing profile ${i + 1}/${profileUrls.length}: ${profileUrl}`);
+    // Configure concurrency control
+    const CONCURRENT_LIMIT = 3; // Process 3 profiles at a time to avoid rate limiting
+    const batches = [];
+    
+    // Split URLs into batches for controlled parallel processing
+    for (let i = 0; i < profileUrls.length; i += CONCURRENT_LIMIT) {
+        batches.push(profileUrls.slice(i, i + CONCURRENT_LIMIT));
+    }
+    
+    console.log(`Processing ${profileUrls.length} profiles in ${batches.length} batches of up to ${CONCURRENT_LIMIT} profiles each`);
+    
+    // Process each batch in parallel
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        const batch = batches[batchIndex];
+        console.log(`\n=== Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} profiles ===`);
         
-        try {
-            const username = extractUsernameFromUrl(profileUrl);
-            if (!username) {
-                console.warn(`Could not extract username from URL: ${profileUrl}`);
-                continue;
+        // Create promises for all profiles in the current batch
+        const batchPromises = batch.map(async (profileUrl, index) => {
+            const globalIndex = batchIndex * CONCURRENT_LIMIT + index + 1;
+            console.log(`[${globalIndex}/${profileUrls.length}] Starting processing for: ${profileUrl}`);
+            
+            try {
+                const username = extractUsernameFromUrl(profileUrl);
+                if (!username) {
+                    console.warn(`[${globalIndex}/${profileUrls.length}] Could not extract username from URL: ${profileUrl}`);
+                    return null;
+                }
+                
+                console.log(`[${globalIndex}/${profileUrls.length}] Extracted username: ${username}`);
+                
+                // Use the profile detail actor with the correct input format
+                const detailInput = {
+                    "username": username
+                };
+                
+                console.log(`[${globalIndex}/${profileUrls.length}] Calling detail actor for ${username}`);
+                
+                const detailRun = await client.actor(detailActorId).call(detailInput);
+                const { items: detailResults } = await client.dataset(detailRun.defaultDatasetId).listItems();
+                
+                console.log(`[${globalIndex}/${profileUrls.length}] Detail actor returned ${detailResults.length} results for ${username}`);
+                
+                if (detailResults.length > 0) {
+                    console.log(`[${globalIndex}/${profileUrls.length}] Successfully processed ${username}`);
+                    return {
+                        ...detailResults[0],
+                        originalProfileUrl: profileUrl,
+                        processedIndex: globalIndex // Keep track of processing order
+                    };
+                } else {
+                    console.warn(`[${globalIndex}/${profileUrls.length}] No detailed results found for ${username}`);
+                    return null;
+                }
+                
+            } catch (error) {
+                console.error(`[${globalIndex}/${profileUrls.length}] Failed to get details for profile ${profileUrl}:`, error.message);
+                return null;
             }
-            
-            console.log(`Extracted username: ${username} from URL: ${profileUrl}`);
-            
-            // Use the profile detail actor with the correct input format
-            const detailInput = {
-                "username": username // Use the simple username format that works
-            };
-            
-            console.log(`Calling detail actor for ${username} with input:`, JSON.stringify(detailInput, null, 2));
-            
-            const detailRun = await client.actor(detailActorId).call(detailInput);
-            const { items: detailResults } = await client.dataset(detailRun.defaultDatasetId).listItems();
-            
-            console.log(`Detail actor returned ${detailResults.length} results for ${username}`);
-            
-            if (detailResults.length > 0) {
-                console.log(`Sample detail result for ${username}:`, JSON.stringify(detailResults[0], null, 2));
-                detailedProfiles.push({
-                    ...detailResults[0],
-                    originalProfileUrl: profileUrl // Keep original URL for reference
-                });
-            } else {
-                console.warn(`No detailed results found for ${username}`);
-            }
-            
-        } catch (error) {
-            console.error(`Failed to get details for profile ${profileUrl}:`, error.message);
-            // Continue with next profile instead of failing completely
-        }
+        });
         
-        // Add delay between requests to be respectful
-        if (i < profileUrls.length - 1) {
-            console.log('Waiting 2 seconds before next request...');
-            await new Promise(resolve => setTimeout(resolve, 2000));
+        // Wait for all promises in the current batch to complete
+        console.log(`Waiting for batch ${batchIndex + 1} to complete...`);
+        const batchResults = await Promise.all(batchPromises);
+        
+        // Add successful results to the main array
+        const successfulResults = batchResults.filter(result => result !== null);
+        detailedProfiles.push(...successfulResults);
+        
+        console.log(`Batch ${batchIndex + 1} completed. Successful: ${successfulResults.length}/${batch.length}. Total processed: ${detailedProfiles.length}/${profileUrls.length}`);
+        
+        // Add a small delay between batches to be respectful to the API
+        if (batchIndex < batches.length - 1) {
+            console.log('Waiting 1 second before next batch...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
     }
     
-    console.log(`Successfully processed ${detailedProfiles.length} detailed profiles`);
-    return detailedProfiles;
+    console.log(`\n=== Parallel processing completed ===`);
+    console.log(`Successfully processed ${detailedProfiles.length} out of ${profileUrls.length} profiles`);
+    
+    // Transform the data before returning for chunked processing
+    const transformedProfiles = transformProfileData(detailedProfiles, profileUrls);
+    console.log(`Transformed ${transformedProfiles.length} profiles for return`);
+    
+    return transformedProfiles;
 };
 
 // Main function combining both steps
@@ -218,7 +319,7 @@ const scrapeLinkedInProfiles = async (searchCriteria) => {
         console.log('=== STEP 1: SEARCHING FOR PROFILE URLS ===');
         console.log('Search criteria received:', JSON.stringify(searchCriteria, null, 2));
         
-        const profileUrls = await searchLinkedInProfiles(searchCriteria);
+        const profileUrls = await searchLinkedInProfileUrls(searchCriteria);
         
         if (profileUrls.length === 0) {
             console.log('No profile URLs found from search');
@@ -228,79 +329,12 @@ const scrapeLinkedInProfiles = async (searchCriteria) => {
         console.log(`=== STEP 2: EXTRACTING DETAILED DATA FOR ${profileUrls.length} PROFILES ===`);
         
         // Step 2: Get detailed profile data - no timeout, let it complete
-        const detailedProfiles = await getDetailedProfileData(profileUrls);
+        const transformedProfiles = await getDetailedProfileData(profileUrls);
         
-        // If we got some detailed profiles, use them; otherwise use basic data with real URLs
-        if (detailedProfiles && detailedProfiles.length > 0) {
-            console.log(`Got ${detailedProfiles.length} detailed profiles, transforming data...`);
-            
-            console.log('=== STEP 3: TRANSFORMING DATA ===');
-            // Transform the detailed data to our expected format
-            const transformedItems = detailedProfiles.map((item, index) => {
-                const originalUrl = item.originalProfileUrl || profileUrls[index] || '#';
-                
-                // Access the nested basic_info structure from the detail actor
-                const basicInfo = item.basic_info || item;
-                const experiences = item.experience || [];
-                const currentPosition = experiences.length > 0 ? experiences[0] : {};
-                
-                // Extract education
-                const education = item.education || [];
-                const primaryEducation = education.length > 0 ? education[0] : {};
-                
-                // Extract skills
-                const skills = item.skills || [];
-                const skillNames = Array.isArray(skills) ? skills.slice(0, 5) : [];
-                
-                // Extract contact information - prioritize email from basic_info
-                const email = basicInfo.email || item.email || 'N/A';
-                const contactDetails = [];
-                if (email && email !== 'N/A') {
-                    contactDetails.push(`Email: ${email}`);
-                }
-                
-                // Extract other contact details
-                const contactInfo = item.contact_info || item.contactInfo || {};
-                if (contactInfo.phone || item.phone) {
-                    contactDetails.push(`Phone: ${contactInfo.phone || item.phone}`);
-                }
-                if (contactInfo.website || item.website) {
-                    contactDetails.push(`Website: ${contactInfo.website || item.website}`);
-                }
-                
-                // Extract location information
-                const location = basicInfo.location ? 
-                    (basicInfo.location.full || basicInfo.location.city || basicInfo.location.country) :
-                    (item.locationName || item.location);
-                
-                const { years, totalMonths, experienceString } = calculateTotalExperience(experiences);
-
-                return {
-                    fullName: safeExtractString(basicInfo.fullname || basicInfo.first_name && basicInfo.last_name ? 
-                        `${basicInfo.first_name} ${basicInfo.last_name}` : 
-                        basicInfo.name || item.fullName),
-                    title: safeExtractString(basicInfo.headline || currentPosition.title || item.currentJobTitle),
-                    company: safeExtractString(basicInfo.current_company || currentPosition.company || currentPosition.companyName),
-                    location: safeExtractString(location),
-                    profileUrl: originalUrl,
-                    summary: safeExtractString(basicInfo.about || item.summary || item.bio, 'No summary available'),
-                    experience: experienceString,
-                    experienceInMonths: totalMonths,
-                    contactDetails: contactDetails.length > 0 ?
-                        contactDetails.join(' | ') :
-                        'No contact details available',
-                    email: safeExtractString(email),
-                    phone: safeExtractString(contactInfo.phone || item.phone),
-                    skills: skillNames.length > 0 ? skillNames.join(', ') : 'N/A',
-                    education: safeExtractString(primaryEducation.school || primaryEducation.degree || 'N/A'),
-                    connections: safeExtractString(basicInfo.connection_count || basicInfo.follower_count || item.connections),
-                    industry: safeExtractString(item.industryName || item.industry || 'Technology'),
-                    yearsOfExperience: years
-                };
-            });
-            
-            console.log(`Successfully processed ${transformedItems.length} detailed profiles`);
-            return transformedItems;
+        // Return the already transformed profiles
+        if (transformedProfiles && transformedProfiles.length > 0) {
+            console.log(`Successfully processed ${transformedProfiles.length} detailed profiles`);
+            return transformedProfiles;
         } else {
             console.log('No detailed profile data obtained - waiting longer or returning empty');
             return [];
@@ -312,4 +346,4 @@ const scrapeLinkedInProfiles = async (searchCriteria) => {
     }
 };
 
-module.exports = { scrapeLinkedInProfiles };
+module.exports = { scrapeLinkedInProfiles, searchLinkedInProfileUrls, getDetailedProfileData };

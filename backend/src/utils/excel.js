@@ -1,8 +1,19 @@
 const Excel = require('exceljs');
 
 const generateExcel = async (data) => {
-    const workbook = new Excel.Workbook();
-    const worksheet = workbook.addWorksheet('LinkedIn Profiles');
+    try {
+        if (!data || !Array.isArray(data)) {
+            throw new Error('Invalid data: Expected array of profiles');
+        }
+        
+        if (data.length === 0) {
+            throw new Error('No data provided for Excel generation');
+        }
+        
+        console.log(`Excel: Generating workbook for ${data.length} profiles`);
+        
+        const workbook = new Excel.Workbook();
+        const worksheet = workbook.addWorksheet('LinkedIn Profiles');
 
     worksheet.columns = [
         { header: 'Salutation', key: 'salutation', width: 15 },
@@ -157,7 +168,16 @@ const generateExcel = async (data) => {
         column.alignment = { vertical: 'top', wrapText: true };
     });
 
-    return await workbook.xlsx.writeBuffer();
+    console.log(`Excel: Workbook created with ${processedData.length} rows`);
+    const buffer = await workbook.xlsx.writeBuffer();
+    console.log(`Excel: Buffer generated, size: ${buffer.length} bytes`);
+    
+    return buffer;
+    
+    } catch (error) {
+        console.error('Excel: Error generating Excel file:', error);
+        throw new Error(`Excel generation failed: ${error.message}`);
+    }
 };
 
 module.exports = { generateExcel };
