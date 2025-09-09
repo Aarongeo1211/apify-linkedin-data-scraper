@@ -1,8 +1,19 @@
 import axios from 'axios';
 import { saveAs } from 'file-saver';
 
+// Updated to properly handle Railway deployments
+const getBaseURL = () => {
+    // Check if we're in a production environment (Railway sets NODE_ENV)
+    if (process.env.NODE_ENV === 'production') {
+        // Use the REACT_APP_BACKEND_URL if set, otherwise fallback to relative path
+        return process.env.REACT_APP_BACKEND_URL || '/api';
+    }
+    // Development fallback
+    return process.env.REACT_APP_BACKEND_URL || 'http://localhost:5001/api';
+};
+
 const API_CLIENT = axios.create({
-    baseURL: process.env.REACT_APP_BACKEND_URL || 'http://localhost:5001/api',
+    baseURL: getBaseURL(),
     timeout: 600000, // 10 minutes timeout for large chunks (100 profiles might take 8-10 minutes)
 });
 
